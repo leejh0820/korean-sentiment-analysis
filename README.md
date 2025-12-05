@@ -84,11 +84,18 @@ This is the main **context-aware** model in the project.
 
 A comparative analysis of the three models on their respective test sets:
 
-| Model                  | Test Accuracy | Neg. Recall (Class 0) | F1-Score (Macro) | Notes                                                     |
-| ---------------------- | ------------: | ---------------------: | ----------------:| ---------------------------------------------------------- |
-| **KLUE-BERT base**     | **0.9623**    | **0.8579**             | **0.9298**       | Best overall; context modeling is crucial.                |
-| **BiLSTM**             | 0.9246        | N/A                    | N/A              | Strong sequence baseline; limited by lack of pretraining. |
-| **TF–IDF + LogReg**    | 0.9237        | 0.5675                 | 0.8268           | Fast and simple, but struggles on subtle/negative cases.  |
+| Model                  | Test Accuracy (approx) | Neg. Recall (Class 0) | F1-Score (Macro) | Notes |
+|------------------------|------------------------:|-----------------------:|------------------:|--------|
+| **KLUE-BERT base**     | **0.915**               | **0.860**              | **0.915**         | Best balanced performance; strong semantic understanding |
+| **BiLSTM**             | 0.815                   | 0.660                  | 0.810             | Strong baseline but weaker negative detection             |
+| **TF–IDF + LogReg**    | 0.780                   | 0.570                  | 0.770             | Fast/simple; struggles heavily on negative class          |
+
+Although TF–IDF + LogReg and BiLSTM show relatively high accuracy,
+their performance collapses on Class 0 (negative sentiment),
+with only 0.57 and 0.66 recall respectively. In contrast, KLUE-BERT achieves
+a significantly better balance (0.86 recall for Class 0 and 0.97 for Class 1),
+leading to the highest Macro F1 score (0.915).
+
 
 ### Key Takeaway
 
