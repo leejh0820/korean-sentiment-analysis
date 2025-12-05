@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import os
+from typing import Tuple
+
+import numpy as np
+import torch
+from sklearn.metrics import accuracy_score
+from torch.utils.data import DataLoader
+
+from .data_utils import (
+    load_kr3_dataframe,
+    train_test_split_kr3_df,
+    build_vocab,
+    KR3TextDataset,
+)
+
+from .models import LSTMClassifier
+from .plot_utils import plot_confusion_matrix
+
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ---------------------------------------------------------------------------
+# Data preparation
+# ---------------------------------------------------------------------------
+
+
+def prepare_lstm_data(
+    n_samples: int = 50_000,
+    max_len: int = 100,
+    max_vocab_size: int = 20_000,
+    min_freq: int = 2,
+    batch_size: int = 64,
+):
+
+    df = load_kr3_dataframe(n_samples=n_samples)
+    train_df, test_df = train_test_split_kr3_df(df)
+
+    # train set 기준으로 vocab 생성
+    stoi, itos = build_vocab(
+        train_df["clean_text"].tolist(),
+        max_vocab_size=max_vocab_size,
+        min_freq=min_freq,
+    )
+    vocab_size = len(stoi)
+    print("Vocab size:", vocab_size)
+
+    train_dataset = KR3TextDataset(train_df, stoi=stoi, max_len=max_len)
+    test_dataset = KR3TextDataset(test_df, stoi=stoi, max_len=max_len)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    return train_loader, test_loader, vocab_size
+
+
+# ---------------------------------------------------------------------------
+# Training / evaluation
+# ---------------------------------------------------------------------------
+
+
+def train_one_epoch(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    criterion,
+    optimizer,
+) -> Tuple[float, float]:
+
+    model.train()
+    total_loss = 0.0
+    all_preds = []
+    all_labels = []
+
+    for x, y in loader:
+        x = x.to(DEVICE)
+        y = y.to(DEVICE)
+
+        optimizer.zero_grad()
+        logits = model(x)
+        loss = criterion(logits, y)
+        loss.backward()
+        optimizer.step()
+
+        batch_size = x.size(0)
+        total_loss += loss.item() * batch_size
+
+        preds = logits.argmax(dim=1)
+        all_preds.extend(preds.detach().cpu().numpy())
+        all_labels.extend(y.detach().cpu().numpy())
+
+    avg_loss = total_loss / len(loader.dataset)
+    acc = accuracy_score(all_labels, all_preds)
+    return avg_loss, acc
+
+
+def evaluate(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    criterion,
+) -> Tuple[float, float]:
+
+    model.eval()
+    total_loss = 0.0
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(DEVICE)
+            y = y.to(DEVICE)
+
+            logits = model(x)
+            loss = criterion(logits, y)
+
+            batch_size = x.size(0)
+            total_loss += loss.item() * batch_size
+
+            preds = logits.argmax(dim=1)
+            all_preds.extend(preds.detach().cpu().numpy())
+            all_labels.extend(y.detach().cpu().numpy())
+
+    avg_loss = total_loss / len(loader.dataset)
+    acc = accuracy_score(all_labels, all_preds)
+    return avg_loss, acc
+
+
+def get_predictions(
+    model: torch.nn.Module,
+    loader: DataLoader,
+):
+
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(DEVICE)
+            y = y.to(DEVICE)
+
+            logits = model(x)
+            preds = logits.argmax(dim=1)
+
+            all_preds.extend(preds.detach().cpu().numpy())
+            all_labels.extend(y.detach().cpu().numpy())
+
+    return all_labels, all_preds
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main():
+    # 하이퍼파라미터
+    N_SAMPLES = 50_000
+    MAX_LEN = 100
+    MAX_VOCAB_SIZE = 20_000
+    MIN_FREQ = 2
+    BATCH_SIZE = 64
+    EPOCHS = 3
+    LR = 1e-3
+
+    # 1) 데이터 준비
+    train_loader, test_loader, vocab_size = prepare_lstm_data(
+        n_samples=N_SAMPLES,
+        max_len=MAX_LEN,
+        max_vocab_size=MAX_VOCAB_SIZE,
+        min_freq=MIN_FREQ,
+        batch_size=BATCH_SIZE,
+    )
+
+    # 2) 모델/손실/옵티마
+    model = LSTMClassifier(vocab_size=vocab_size).to(DEVICE)
+    print(model)
+
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+    best_val_acc = 0.0
+    best_model_path = os.path.join("models", "lstm_best.pt")
+
+    # 3) 학습 루프
+    for epoch in range(1, EPOCHS + 1):
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer
+        )
+        val_loss, val_acc = evaluate(model, test_loader, criterion)
+
+        print(
+            f"[Epoch {epoch}] "
+            f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f}, "
+            f"val_loss={val_loss:.4f}, val_acc={val_acc:.4f}"
+        )
+
+        # best 모델 저장
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            os.makedirs("models", exist_ok=True)
+            torch.save(model.state_dict(), best_model_path)
+            print(
+                f"  -> New best model saved to {best_model_path} (val_acc={val_acc:.4f})"
+            )
+
+    # 4) 최종 모델로 혼동 행렬 생성
+    if os.path.exists(best_model_path):
+        model.load_state_dict(torch.load(best_model_path, map_location=DEVICE))
+        print(f"Loaded best LSTM model from {best_model_path} for confusion matrix.")
+
+    os.makedirs(os.path.join("reports", "figures"), exist_ok=True)
+    y_true, y_pred = get_predictions(model, test_loader)
+    cm_path = os.path.join("reports", "figures", "cm_lstm.png")
+    plot_confusion_matrix(
+        y_true=y_true,
+        y_pred=y_pred,
+        # labels=["0", "1"],
+        title="LSTM Confusion Matrix",
+        out_path=cm_path,
+    )
+    print(f"Saved confusion matrix figure to: {cm_path}")
+
+
+if __name__ == "__main__":
+    main()
